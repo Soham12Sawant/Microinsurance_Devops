@@ -1,0 +1,21 @@
+---
+# ==============================================================================
+# Master Ansible Playbook: Microinsurance Provisioning & Continuous Deployment
+# ==============================================================================
+- name: Provision and Deploy Microinsurance Enrollment Platform
+  hosts: microinsurance_nodes
+  become: yes
+  gather_facts: yes
+
+  roles:
+    - microinsurance
+
+  handlers:
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Restart microinsurance service
+      systemd:
+        name: microinsurance
+        state: restarted

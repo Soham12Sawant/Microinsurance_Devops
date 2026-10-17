@@ -1,0 +1,128 @@
+---
+# ==============================================================================
+# Ansible Tasks: Automated Server Provisioning for Microinsurance Platform
+# Ensures full idempotency across packages, user, folders, config, and systemd
+# ==============================================================================
+
+- name: Update apt cache and install prerequisite system packages
+  apt:
+    name:
+      - openjdk-21-jre-headless
+      - curl
+      - ufw
+      - git
+      - ca-certificates
+    state: present
+    update_cache: yes
+
+- name: Create dedicated system group for microinsurance
+  group:
+    name: "{{ app_group }}"
+    state: present
+    system: yes
+
+- name: Create dedicated system user for microinsurance
+  user:
+    name: "{{ app_user }}"
+    group: "{{ app_group }}"
+    home: "{{ app_dir }}"
+    shell: /bin/false
+    system: yes
+    state: present
+
+- name: Create required application directory tree
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0750'
+  loop:
+    - "{{ app_dir }}"
+    - "{{ app_dir }}/bin"
+    - "{{ app_dir }}/config"
+    - "{{ app_dir }}/logs"
+    - "{{ app_dir }}/backups"
+
+- name: Backup existing application binary if present
+  copy:
+    src: "{{ app_dir }}/bin/microinsurance-platform.jar"
+    dest: "{{ app_dir }}/backups/microinsurance-platform-pre-{{ app_version }}.jar"
+    remote_src: yes
+    backup: yes
+  ignore_errors: yes
+
+- name: Copy new application release JAR to target node
+  copy:
+    src: "../../target/microinsurance-enrollment-platform-1.0.0.jar"
+    dest: "{{ app_dir }}/bin/microinsurance-platform.jar"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0640'
+  notify: Restart microinsurance service
+
+- name: Deploy production configuration properties
+  copy:
+    dest: "{{ app_dir }}/config/application-production.properties"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0600'
+    content: |
+      server.port={{ app_port }}
+      spring.application.name=microinsurance-enrollment-platform
+      app.environment={{ app_env }}
+      management.endpoints.web.exposure.include=health,info,metrics
+  notify: Restart microinsurance service
+
+- name: Configure and deploy systemd unit service file
+  copy:
+    dest: /etc/systemd/system/microinsurance.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Automated Microinsurance Enrollment Platform Service
+      After=network.target
+
+      [Service]
+      User={{ app_user }}
+      Group={{ app_group }}
+      WorkingDirectory={{ app_dir }}
+      ExecStart=/usr/bin/java -Xms256m -Xmx512m -jar {{ app_dir }}/bin/microinsurance-platform.jar --spring.config.additional-location=file:{{ app_dir }}/config/application-production.properties
+      SuccessExitStatus=143
+      Restart=always
+      RestartSec=10
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+  notify:
+    - Reload systemd daemon
+    - Restart microinsurance service
+
+- name: Allow incoming traffic on application port via UFW firewall
+  ufw:
+    rule: allow
+    port: "{{ app_port }}"
+    proto: tcp
+
+- name: Ensure microinsurance service is enabled and actively running
+  systemd:
+    name: microinsurance
+    state: started
+    enabled: yes
+
+- name: Validate service health via HTTP probe (Reliability Validation)
+  uri:
+    url: "http://127.0.0.1:{{ app_port }}/api/health"
+    method: GET
+    status_code: 200
+    return_content: yes
+  register: health_check_response
+  until: health_check_response.status == 200
+  retries: 6
+  delay: 5
+
+- name: Display health verification payload
+  debug:
+    msg: "Health check passed successfully: {{ health_check_response.json }}"

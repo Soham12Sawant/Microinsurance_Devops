@@ -1,0 +1,51 @@
+---
+# ==============================================================================
+# Ansible Playbook: Automated Rollback & Recovery to Previous Stable Baseline
+# ==============================================================================
+- name: Emergency Rollback of Microinsurance Platform
+  hosts: microinsurance_nodes
+  become: yes
+
+  tasks:
+    - name: Verify backup binary exists before rollback
+      stat:
+        path: "{{ app_dir }}/backups/microinsurance-platform-pre-{{ app_version }}.jar"
+      register: backup_file
+
+    - name: Fail if no previous stable backup is available
+      fail:
+        msg: "Cannot rollback: No previous backup JAR found in {{ app_dir }}/backups"
+      when: not backup_file.stat.exists
+
+    - name: Stop current failing microinsurance service
+      systemd:
+        name: microinsurance
+        state: stopped
+
+    - name: Restore previous stable JAR from backup
+      copy:
+        src: "{{ app_dir }}/backups/microinsurance-platform-pre-{{ app_version }}.jar"
+        dest: "{{ app_dir }}/bin/microinsurance-platform.jar"
+        remote_src: yes
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0640'
+
+    - name: Start restored service
+      systemd:
+        name: microinsurance
+        state: started
+
+    - name: Verify restored service health
+      uri:
+        url: "http://127.0.0.1:{{ app_port }}/api/health"
+        method: GET
+        status_code: 200
+      register: rollback_health
+      until: rollback_health.status == 200
+      retries: 5
+      delay: 3
+
+    - name: Display rollback confirmation
+      debug:
+        msg: "ROLLBACK COMPLETE: Restored previous release and verified health status: UP"
